@@ -1,4 +1,4 @@
-# CLIP-Archiver
+# clip-archiver
 An asynchronous interface for some select txt2img diffusion models using the [🤗 Diffusers](https://huggingface.co/docs/diffusers/index) library. Makes use of quantization and pre-encoding prompts for large models, and implements hires_fix for pipelines that support img2img. This reduces the vram needed to run large models like Stable Diffusion 3, Flux, and Auraflow, while also making the older models more competitive.
 
 ![showcase of image generation](clip_archiver_showcase.png)
