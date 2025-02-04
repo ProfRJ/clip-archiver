@@ -5,7 +5,7 @@ An asynchronous interface for some select txt2img diffusion models using the [ðŸ
 
 ## Installation:
 - Create a python venv with an optional prompt: \
-`python -m clip-archiver .venv`
+`python -m venv .venv --prompt clip-archiver`
 - Enter the python venv: \
 Linux: `source .venv/bin/activate` \
 Windows: `.venv\Scripts\activate.bat` 
