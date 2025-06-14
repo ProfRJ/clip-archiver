@@ -1,4 +1,5 @@
 from .async_json import Async_JSON
+from .clip_archiver import CLIP_Archiver
 from .convert_auraflow_checkpoint_to_diffuser import auraflow_checkpoint_to_diffuser
 from .convert_flux_checkpoint_to_diffuser import flux_checkpoint_to_diffuser
 from .convert_vae_pt_to_diffusers import vae_pt_to_vae_diffuser
