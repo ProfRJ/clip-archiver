@@ -16,6 +16,8 @@ Windows: `.venv\Scripts\activate.bat`
 ## Basic Usage:
 - Create the Object: 
 ```
+from helpers import CLIP_Archiver
+
 clip_archiver = await CLIP_Archiver.create(
     default_model='stable-diffusion-v1-5/stable-diffusion-v1-5', # huggingface repos or civitai links are accepted.
     models_path='models/path', # Can be a full path, or a name for the subfolder
