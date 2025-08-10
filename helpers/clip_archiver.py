@@ -58,12 +58,12 @@ def resize_and_crop_centre(images:[Image], new_width:int, new_height:int) -> [Im
 class CLIP_Archiver(object):
     @classmethod
     async def create(cls, civitai_token:str=None, default_model='stable-diffusion-v1-5/stable-diffusion-v1-5', models_path:str='', default_user_config:dict=None, 
-        logger=None, profiles_path:str=None, return_images_and_settings:bool=False) -> None:
+        save_as_4bit:bool=True, save_as_8bit:bool=False, logger=None, profiles_path:str=None, return_images_and_settings:bool=False) -> None:
         """
         Create and return the CLIP_Archiver class object, initialising it with the given config.
 
         civitai_token - str authenticator token for the civitai api, which is required if you wish to have downloads function.
-        default_model - huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
+        default_model - str with huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
         models_path - str or pathlike object with the intended location for the models. (default '')
         default_user_config - dict of settings for users to start with. See below for the needed dict keys. (default None)
         logger - logging object (default None)
@@ -73,9 +73,8 @@ class CLIP_Archiver(object):
         self = CLIP_Archiver()
         self.change_model_queue = asyncio.Queue(maxsize=0)
         if not default_user_config:
-            # move to function and call it make_default_settings
             default_user_config = {"height": 768, "width": 768, "num_inference_steps": 22, "guidance_scale": 8.0, "scheduler": "ddim", 
-            "batch_size": 1, "negative_prompt": "jpeg", "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": None, "clip_skip": 0,
+            "batch_size": 1, "negative_prompt": "jpeg", "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": -1, "clip_skip": 0,
             "lora_and_embeds": None}
         self.default_user_config = default_user_config
         self.finished_generation = asyncio.Event()
@@ -85,9 +84,11 @@ class CLIP_Archiver(object):
         self.logger = logger
         self.model_manager = await Model_Manager.create(
             civitai_token=civitai_token, 
-            default_model=default_model, 
-            models_path=models_path, 
-            logger=logger
+            default_model=default_model,
+            save_as_4bit=save_as_4bit,
+            save_as_8bit= save_as_8bit,
+            logger=logger, 
+            models_path=models_path
         )
         self.return_images_and_settings = return_images_and_settings
         if profiles_path:
@@ -157,7 +158,7 @@ class CLIP_Archiver(object):
 
         # Retrieve the preset from the user's profile or use the default
         preset = user_profile.get(preset_name, user_profile['_intermediate'])
-        
+
         # Does the model exist?
         model_info = self.model_manager.get_model_info(model)
         if not model_info:
@@ -184,6 +185,13 @@ class CLIP_Archiver(object):
             'model':model
         }
 
+        # Save the settings
+        user_profile[preset_name] = settings.copy()
+        if not preset_name == '_intermediate':
+            user_profile['_intermediate'] = settings
+        if self.profiles_path:
+            await Async_JSON.async_save_json(self.profiles_path, self.user_profiles)
+
         # Correct args for input
         if settings['clip_skip'] == '0':
             settings['clip_skip'] = None
@@ -191,16 +199,8 @@ class CLIP_Archiver(object):
             settings['hires_fix'] = False
         if settings['init_image'] == 'None':
             settings['init_image'] = None
-        if settings['seed']:
-            if settings['seed'] <= -1:
-                settings['seed'] = None
-
-        # Save the settings
-        user_profile[preset_name] = settings
-        if not preset_name == '_intermediate':
-            user_profile['_intermediate'] = settings
-        if self.profiles_path:
-            await Async_JSON.async_save_json(self.profiles_path, self.user_profiles)
+        if settings['seed'] == None or -1:
+            settings['seed'] = int(time.time())
 
         # Default pipeline settings
         settings_to_pipe = {
@@ -322,9 +322,11 @@ class CLIP_Archiver(object):
             if settings_to_pipe.get('clip_skip', False) == None: 
                 settings_to_pipe['clip_skip'] = 0 if settings_to_pipe['clip_skip'] == None else settings_to_pipe['clip_skip']
 
+            # Optionally make the result a tuple to add a dictionary of settings used to generate each image.
             if self.return_images_and_settings:
                 settings_to_pipe['seed'] = [settings_to_pipe['seed']+i for i in range(settings_to_pipe['batch_size'])]
                 images = (images, settings_to_pipe)
+
             future.set_result(images)
 
         while True:
