@@ -10,17 +10,18 @@ import torch
 import requests
 
 # import the diffuser pipelines
-from diffusers import (AutoencoderKL, AuraFlowPipeline, AuraFlowTransformer2DModel, BitsAndBytesConfig, FluxImg2ImgPipeline, FluxPipeline, FluxTransformer2DModel, 
+from diffusers import (AutoencoderKL, AuraFlowPipeline, AuraFlowTransformer2DModel, FluxImg2ImgPipeline, FluxPipeline, FluxTransformer2DModel, 
    SD3Transformer2DModel, StableDiffusionImg2ImgPipeline, StableDiffusionPipeline, StableDiffusion3Pipeline, StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline, UNet2DConditionModel)
 # import the diffuser schedulers
 from diffusers import (EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler, DPMSolverSinglestepScheduler, HeunDiscreteScheduler, PNDMScheduler,
     DDPMScheduler, DDIMScheduler, KDPM2DiscreteScheduler, KDPM2AncestralDiscreteScheduler, DPMSolverSDEScheduler, UniPCMultistepScheduler, DEISMultistepScheduler)
+from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
 from diffusers.utils import load_image 
 from helpers import Async_JSON, auraflow_checkpoint_to_diffuser, vae_pt_to_vae_diffuser, flux_checkpoint_to_diffuser
 from huggingface_hub import try_to_load_from_cache
 from pathlib import Path
 from PIL import Image
-from transformers import T5EncoderModel
+from transformers import T5EncoderModel, BitsAndBytesConfig as TransformersBitsAndBytesConfig
 
 def download_file(file_path:str or Path, url:str, authorization_token:str=None, retries:int=3) -> Path:
     """
@@ -48,9 +49,20 @@ def download_file(file_path:str or Path, url:str, authorization_token:str=None, 
             if retry == retries-1:
                 raise e
 
+def rmdir(directory):
+    """ https://stackoverflow.com/a/49782093 """
+    directory = Path(directory)
+    for item in directory.iterdir():
+        if item.is_dir():
+            rmdir(item)
+        else:
+            item.unlink()
+    directory.rmdir()
+
+
 class Model_Manager(object):
     @classmethod
-    async def create(cls, civitai_token='', default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', models_path:str='', logger=None) -> None:
+    async def create(cls, civitai_token='', default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', save_as_4bit:bool=True, save_as_8bit:bool=False, models_path:str='', logger=None) -> object:
         """
         Creates and returns an asyncio model_manager object.
 
@@ -66,8 +78,12 @@ class Model_Manager(object):
         self.default_model = default_model
         self.models_path = Path(models_path) if models_path else Path('models') 
         self.download_worker = asyncio.create_task(self._download_worker())
-        self.model_queue = asyncio.Queue(maxsize=0)
+        if save_as_4bit and save_as_8bit:
+            save_as_8bit = False
+        self.save_as_4bit = save_as_4bit
+        self.save_as_8bit = save_as_8bit
         self.logger = logger
+        self.model_queue = asyncio.Queue(maxsize=0)
         self.models = await self._get_models()
         return self
 
@@ -209,17 +225,58 @@ class Model_Manager(object):
                 )
             if delete_checkpoint:
                 Path(path).unlink()
+
+            if vae_checkpoint_path:
+                vae = vae_pt_to_vae_diffuser(model_pipeline, vae_checkpoint_path)
+                (path/'vae').unlink()
+                vae.save_pretrained(save_directory=path/'vae')
+                vae_checkpoint_path.unlink()
+
             path = str(self.models_path / model_pipeline / model_name)
             local_model_pipeline.save_pretrained(save_directory=path)
             del local_model_pipeline
+ 
+        is_quantized = (path/'transformer'/'quantized.txt').exists() or (path/'unet'/'quantized.txt').exists()
+        # Quantize the main part of the model to reduce it's size
+        if (self.save_as_4bit or self.save_as_8bit) and model_type == 'Checkpoint' and not is_quantized:
+            transformer = None
+            unet = None
+            # These models need their transformer quantized
+            if model_pipeline == 'AuraFlow':
+                torch_dtype = torch.float16
+                quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
+                transformer = AuraFlowTransformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            if model_pipeline == 'Flux':
+                torch_dtype = torch.bfloat16
+                quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
+                transformer = FluxTransformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            if model_pipeline == 'SD3':
+                torch_dtype = torch.float16
+                quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
+                transformer = SD3Transformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            if transformer:
+                rmdir((path/'transformer'))
+                transformer.save_pretrained(save_directory=path/'transformer')
+                del transformer
+                content = 'savedas4bit' if self.save_as_4bit else 'savedas8bit'
+                with open(path/'transformer'/'quantized.txt', 'w') as file: 
+                    file.write(content)
+            
+            # These models need their unet quantized
+            if model_pipeline in ['SD1', 'SD2', 'SDXL']:
+                torch_dtype = torch.float16
+                quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
+                unet = UNet2DConditionModel.from_pretrained(path, subfolder='unet', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            if unet:
+                rmdir((path/'unet'))
+                unet.save_pretrained(save_directory=path/'unet')
+                del unet
+                content = 'savedas4bit' if self.save_as_4bit else 'savedas8bit'
+                with open(path/'unet'/'quantized.txt', 'w') as file: 
+                    file.write(content)
             torch.cuda.empty_cache()
 
-            if vae_checkpoint_path:
-                vae_subfolder = path+'/vae'
-                vae_pt_to_vae_diffuser(model_pipeline, vae_checkpoint_path, vae_subfolder)
-                if delete_checkpoint:
-                    vae_checkpoint_path.unlink()
-
+        # Add model entry information 
         model_pipeline = self.models.setdefault(model_pipeline, {})
         model_type = model_pipeline.setdefault(model_type, {})
         model_entry = model_type.setdefault(model_name, {"path":str(path), "users":[model_owner]})
@@ -238,11 +295,10 @@ class Model_Manager(object):
         settings_to_pipe - dict containing the neccessary settings to build a pipeline and generate an image.  
         """
         seed = settings_to_pipe.pop('seed')
-        if not seed:
+        if seed == -1 or None:
             seed = int(time.time())
         pipe_config = settings_to_pipe.copy()
         settings_to_pipe['seed'] = seed
-
         pipe_config['generator'] = [torch.Generator("cuda").manual_seed(seed+i) for i in range(pipe_config['batch_size'])]
         model = pipe_config.pop('model')
         model_info = self.get_model_info(model)
@@ -283,7 +339,6 @@ class Model_Manager(object):
         def aura_flow(model_info:dict=model_info, pipe_config:dict=pipe_config):
             pipeline = self.get_pipeline(model_info['model_pipeline'])
             torch_dtype = torch.float16
-            quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
 
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
@@ -301,17 +356,12 @@ class Model_Manager(object):
                 device='cuda')
             del pipeline_text2image
 
-            # quantize the transformer to 4bit precision to reduce its memory footprint
-            transformer = AuraFlowTransformer2DModel.from_pretrained(model_info['path'], subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 text_encoder=None,
                 torch_dtype=torch.float16,
-                transformer=None,
                 variant='fp16'
             ).to('cuda')
-            pipeline_text2image.transformer = transformer
-            del transformer
 
             return pipeline_text2image, pipe_config
 
@@ -323,15 +373,13 @@ class Model_Manager(object):
             init_image = pipe_config.pop('init_image', None)
             hires_run = pipe_config.pop('hires_run', False)
             pipeline = self.get_pipeline(model_info['model_pipeline'] if not init_image and not hires_run else model_info['model_pipeline']+'Img2Img')
-            quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
             
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 torch_dtype=torch_dtype,
                 safety_checker=None,
             ).to('cuda')
-            pipeline_text2image.unet = UNet2DConditionModel.from_pretrained(model_info['path'], subfolder='unet', torch_dtype=torch_dtype, quantization_config=quantization_config)
-            
+        
             # Memory and speed optimisation
             pipeline_text2image.enable_attention_slicing()
             pipeline_text2image.enable_vae_slicing()
@@ -375,7 +423,6 @@ class Model_Manager(object):
             Build a pipeline for a stable diffusion 3 model.
             """
             torch_dtype = torch.float16
-            quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
             pipeline = self.get_pipeline(model_info['model_pipeline'])
 
             # encode the prompt
@@ -395,9 +442,7 @@ class Model_Manager(object):
                 negative_prompt_2=pipe_config.get('negative_prompt', None), negative_prompt_3=pipe_config.pop('negative_prompt', None), num_images_per_prompt= pipe_config.pop('batch_size'), max_sequence_length=512, 
                 clip_skip=pipe_config.pop('clip_skip', None), device='cuda')
             del pipeline_text2image
-
-            # quantize the transformer to 4bit precision to reduce its memory footprint
-            transformer = SD3Transformer2DModel.from_pretrained(model_info['path'], subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 text_encoder=None,
@@ -405,10 +450,8 @@ class Model_Manager(object):
                 text_encoder_3=None,
                 tokenizer_3=None,
                 torch_dtype=torch_dtype,
-                transformer=transformer,
                 variant='fp16'
             ).to('cuda')
-            del transformer
 
             return pipeline_text2image, pipe_config
 
@@ -419,7 +462,6 @@ class Model_Manager(object):
             torch_dtype = torch.bfloat16
             init_image = pipe_config.pop('init_image', None)
             hires_run = pipe_config.pop('hires_run', False)
-            quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype, bnb_4bit_quant_type="nf4")
 
             # FluxImg2ImgPipeline is lacking in attributes so we need to make the distinction a lot of times.
             model_pipeline = model_info['model_pipeline'] 
@@ -441,16 +483,12 @@ class Model_Manager(object):
                 pipe_config.pop('negative_prompt')
             del pipeline_text2image
 
-            # quantize the transformer to 4bit precision to reduce its memory footprint
-            transformer = FluxTransformer2DModel.from_pretrained(model_info['path'], subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 text_encoder=None,
                 text_encoder_2=None,
                 torch_dtype=torch_dtype,
-                transformer=transformer
             ).to('cuda')
-            del transformer
 
             # Memory and speed optmisation
             # doesnt work with the img2img pipeline?
@@ -566,7 +604,6 @@ class Model_Manager(object):
                 elif 'SD 2' in chosen_model['baseModel']:
                     model_pipeline = 'SD 2'
                 elif 'SD 3' in chosen_model['baseModel']:
-                    # not a chance :P
                     model_pipeline = 'SD 3'
                 elif 'SDXL' in chosen_model['baseModel']:
                     model_pipeline = 'SDXL'
