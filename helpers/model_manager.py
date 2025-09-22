@@ -210,7 +210,7 @@ class Model_Manager(object):
         """
         torch_dtype = torch.float16
 
-        if model_type == 'Checkpoint' and convert_checkpoint_to_diffuser and Path(path).is_file():
+        if model_type == 'Checkpoint' and convert_checkpoint_to_diffuser and not 'snapshots' in path:
             if model_pipeline == 'AuraFlow':
                 raise NotImplementedError('AuraFlowTransformer2DModel.from_single_file is not supported yet.')
                 #local_model_pipeline = auraflow_checkpoint_to_diffuser(checkpoint_path=path)
@@ -463,8 +463,7 @@ class Model_Manager(object):
                 model_info['path'],
                 torch_dtype=torch_dtype,
                 transformer=None,
-                vae=None,
-                variant='fp16'
+                vae=None
             ).to('cuda')
 
             prompt_embeds, prompt_embeds_mask = pipeline_text2image.encode_prompt(prompt=prompt, num_images_per_prompt=num_images_per_prompt, max_sequence_length=1024, device='cuda')
@@ -510,9 +509,9 @@ class Model_Manager(object):
             pipe_config['num_inference_steps'] = num_inference_steps
             pipe_config['num_images_per_prompt'] = num_images_per_prompt
             pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
-            pipe_config['prompt_embeds_mask'] = negative_pooled_prompt_embeds
+            pipe_config['negative_prompt_embeds_mask'] = negative_prompt_embeds_mask
             pipe_config['prompt_embeds'] = prompt_embeds
-            pipe_config['prompt_embeds_mask'] = pooled_prompt_embeds
+            pipe_config['prompt_embeds_mask'] = prompt_embeds_mask
             pipe_config['width'] = width
 
             return pipeline_text2image, pipe_config
