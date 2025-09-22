@@ -73,8 +73,8 @@ class CLIP_Archiver(object):
         self = CLIP_Archiver()
         self.change_model_queue = asyncio.Queue(maxsize=0)
         if not default_user_config:
-            default_user_config = {"height": 768, "width": 768, "num_inference_steps": 22, "guidance_scale": 8.0, "scheduler": "ddim", 
-            "batch_size": 1, "negative_prompt": "jpeg", "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": -1, "clip_skip": 0,
+            default_user_config = {"height": 768, "width": 768, "num_images_per_prompt":1, "num_inference_steps": 22, "guidance_scale": 8.0, "scheduler": "ddim", 
+            "negative_prompt": "jpeg", "true_cfg_scale":1.0, "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": -1, "clip_skip": 0,
             "lora_and_embeds": None}
         self.default_user_config = default_user_config
         self.finished_generation = asyncio.Event()
@@ -108,14 +108,13 @@ class CLIP_Archiver(object):
 
         return self
 
-    async def __call__(self, prompt:str, batch_size:int=None, clip_skip:int=None, guidance_scale:float=None, height:int=None, hires_fix:bool=False, hires_strength:float=None, 
-        init_image:str=None, init_strength:float=None, lora_and_embeds:[str]=None, model:str=None, negative_prompt:str=None, num_inference_steps:int=None, 
-        preset_name:str=None, user:str='system', scheduler:str=None, seed:int=None, width:int=None) -> [Image] or ([Image], dict):
+    async def __call__(self, prompt:str, clip_skip:int=None, guidance_scale:float=None, height:int=None, hires_fix:bool=False, hires_strength:float=None, init_image:str=None, 
+        init_strength:float=None, lora_and_embeds:[str]=None, model:str=None, negative_prompt:str=None, num_images_per_prompt:int=None, num_inference_steps:int=None, 
+        preset_name:str='_intermediate', true_cfg_scale:float=None, user:str='system', scheduler:str=None, seed:int=None, width:int=None) -> [Image] or ([Image], dict):
         """
         Prompt a supported txt2img model with the specified settings.
 
         prompt - str of text describing the desired image.
-        batch_size - int amount of images to be generated together.
         clip_skip - int representing which layer of clip to skip to, which could result in more accurate images. ['SD 1', 'SD 2', 'SDXL'] 
         guidance_scale - int representing how accurate to the prompt the image will be. Lower values will lean toward the model normal output while higher values will lean towards the prompt. 
         height - int representing the height of the image in pixels.
@@ -126,8 +125,10 @@ class CLIP_Archiver(object):
         lora_and_embeds - list of textual inversion embeds and LORAs with their respected weight, 'lora:1'. ['SD 1', 'SD 2', 'SDXL'] 
         model - str of which txt2img model to use for the generation.
         negative_prompt - str of text describing unwanted aspects of the image. 
+        num_images_per_prompt - int amount of images to be generated together.
         num_inference_steps - int of how many iterations the image will go through. 
         preset_name - str of the preset to save the preset under. (default '_intermediate')
+        true_cfg_scale - float that is used in place of guidance_scale in some models.
         user - str of the profile to save the preset under. (default 'system')
         scheduler - str of how generation will be solved.
         seed - int representing a unique noise from which to start the generation.
@@ -143,8 +144,6 @@ class CLIP_Archiver(object):
             hires_fix = str(hires_fix)
         if preset_name == '_intermediate':
             preset_name = 'intermediate'
-        if not preset_name:
-            preset_name = '_intermediate'
 
         # See if the image exists
         if init_image:
@@ -170,11 +169,12 @@ class CLIP_Archiver(object):
         settings = {
             'height':round(height/8)*8 if height else preset['height'],
             'width':round(width/8)*8 if width else preset['width'],
+            'num_images_per_prompt': num_images_per_prompt if num_images_per_prompt else preset['num_images_per_prompt'],
             'num_inference_steps':num_inference_steps if num_inference_steps else preset['num_inference_steps'],
             'guidance_scale':guidance_scale if guidance_scale else preset['guidance_scale'],
             'scheduler':scheduler.value if scheduler else preset['scheduler'],
-            'batch_size':batch_size if batch_size else preset['batch_size'],
             'negative_prompt':negative_prompt if negative_prompt else preset['negative_prompt'],
+            'true_cfg_scale':true_cfg_scale if true_cfg_scale else preset['true_cfg_scale'],
             'init_image':init_image if init_image else preset['init_image'],
             'init_strength':init_strength if init_strength else preset['init_strength'],
             'hires_fix': hires_fix if hires_fix else preset['hires_fix'],
@@ -193,6 +193,7 @@ class CLIP_Archiver(object):
             await Async_JSON.async_save_json(self.profiles_path, self.user_profiles)
 
         # Correct args for input
+        settings['prompt'] = prompt
         if settings['clip_skip'] == '0':
             settings['clip_skip'] = None
         if settings['hires_fix'] == 'False':
@@ -201,51 +202,19 @@ class CLIP_Archiver(object):
             settings['init_image'] = None
         if settings['seed'] == None or -1:
             settings['seed'] = int(time.time())
-
-        # Default pipeline settings
-        settings_to_pipe = {
-            'prompt':prompt,
-            'height':settings['height'],
-            'width':settings['width'],
-            'num_inference_steps':settings['num_inference_steps'],
-            'guidance_scale':settings['guidance_scale'],
-            'batch_size':settings['batch_size'],
-            'model': settings['model'],
-            'seed': settings['seed']
-        }
-
-        # Get pipeline specific settings
-        if 'AuraFlow' in model_info['model_pipeline']:
-            settings_to_pipe.update({'negative_prompt': settings['negative_prompt']})
-        if 'Flux' in model_info['model_pipeline']:
-            settings_to_pipe.update({'negative_prompt':settings['negative_prompt']})
-            if settings.get('init_image'):
-                settings_to_pipe.update({'init_image':settings['init_image'], 'init_strength':settings['init_strength']})
-            if settings.get('hires_fix'):
-                settings_to_pipe.update({'hires_fix':settings['hires_fix'], 'hires_strength':settings['hires_strength']})
-            if settings.get('lora_and_embeds'):
-                settings_to_pipe.update({'lora_and_embeds':settings['lora_and_embeds']})
-        if model_info['model_pipeline'] in ['SD 1', 'SD 2', 'SDXL']: 
-            settings_to_pipe.update({'negative_prompt':settings['negative_prompt'], 'scheduler':settings['scheduler'], 'clip_skip':settings['clip_skip']})
-            if settings.get('init_image'):
-                settings_to_pipe.update({'init_image':settings['init_image'], 'init_strength':settings['init_strength']})
-            if settings.get('hires_fix'):
-                settings_to_pipe.update({'hires_fix':settings['hires_fix'], 'hires_strength':settings['hires_strength']})
-            if settings.get('lora_and_embeds'):
-                settings_to_pipe.update({'lora_and_embeds':settings['lora_and_embeds']})
-        if 'SD 3' in model_info['model_pipeline']:
-            settings_to_pipe.update({'negative_prompt':settings['negative_prompt'], 'clip_skip':settings['clip_skip']})
+        if len(settings['lora_and_embeds']) == 0:
+            settings.pop('lora_and_embeds')
 
         future = asyncio.Future()
-        await self.image_queue.put((future, settings_to_pipe))
+        await self.image_queue.put((future, settings))
         return await future
 
-    async def _change_model(self, settings_to_pipe:dict):
+    async def _change_model(self, settings:dict):
         """
         Informs the `_idle_manager` to change model. 
         """
         pipe_future = asyncio.Future()
-        await self.change_model_queue.put((settings_to_pipe, pipe_future))
+        await self.change_model_queue.put((settings, pipe_future))
         return await pipe_future
 
     async def _idle_manager(self):
@@ -253,13 +222,12 @@ class CLIP_Archiver(object):
         Manages the diffuser pipeline to save memory when not in use.
         """        
         while True:
-            settings_to_pipe, pipe_future = await self.change_model_queue.get()
+            settings, pipe_future = await self.change_model_queue.get()
             self.finished_generation.clear()
             try:
                 with torch.no_grad():
-                    pipeline_text2image = self.model_manager.build_pipeline(settings_to_pipe)
-                    # somehow make this async so it doesnt block the event loop, without leading to an OOM
-                    self.pipeline_text2image, pipe_config = pipeline_text2image()
+                    pipeline_text2image = self.model_manager.build_pipeline(settings)
+                    self.pipeline_text2image, pipe_config = pipeline_text2image(**settings)
                     self.pipeline_text2image.set_progress_bar_config(disable=True)
                     self.pipeline_text2image.enable_model_cpu_offload()
                 pipe_future.set_result(pipe_config)
@@ -298,42 +266,43 @@ class CLIP_Archiver(object):
             
             return images
 
-        async def process_message(future:asyncio.Future, settings_to_pipe:dict) -> [Image] or ([Image], dict):
+        async def process_message(future:asyncio.Future, settings:dict) -> [Image] or ([Image], dict):
             """
-            Prepare and send a response for the user message using their prompt.
+            Prepare and send a response for the user message using their settings.
             """
-            pipe_config = await self._change_model(settings_to_pipe)
+            pipe_config = await self._change_model(settings)
             # Diffuse!
             with torch.no_grad():
                 images = await asyncio.to_thread(generate_images, pipe_config)
 
             # Optionally upscale with another go if the model supports img2img.
-            if settings_to_pipe.get('hires_fix'):
-                images = resize_and_crop_centre(images, settings_to_pipe['width'], settings_to_pipe['height'])
-                pipe_config['strength'] = settings_to_pipe['hires_strength']
-                settings_to_pipe.update({'hires_run':True})
-                pipe_config = await self._change_model(settings_to_pipe)
-                pipe_config['image'] = images
+            if settings.get('hires_fix'):
+                images = resize_and_crop_centre(images, settings['width'], settings['height'])
+                hires_settings = settings.copy()
+                hires_settings['image'] = images
+                hires_settings['hires_fix'] = False    
+                hires_settings['strength'] = settings['hires_strength']
+                hires_pipe_config = await self._change_model(hires_settings)
 
-                settings_to_pipe.pop('hires_run')
-                images = await asyncio.to_thread(generate_images, pipe_config)
+                with torch.no_grad():
+                    images = await asyncio.to_thread(generate_images, hires_pipe_config)
 
             # Correct args for output
-            if settings_to_pipe.get('clip_skip', False) == None: 
-                settings_to_pipe['clip_skip'] = 0 if settings_to_pipe['clip_skip'] == None else settings_to_pipe['clip_skip']
+            if settings.get('clip_skip', False) == None: 
+                settings['clip_skip'] = 0 if settings['clip_skip'] == None else settings['clip_skip']
 
             # Optionally make the result a tuple to add a dictionary of settings used to generate each image.
             if self.return_images_and_settings:
-                settings_to_pipe['seed'] = [settings_to_pipe['seed']+i for i in range(settings_to_pipe['batch_size'])]
-                images = (images, settings_to_pipe)
+                settings['seed'] = [settings['seed']+i for i in range(settings['num_images_per_prompt'])]
+                images = (images, settings)
 
             future.set_result(images)
 
         while True:
             ### Worker Loop ###
             try:
-                future, settings_to_pipe = await self.image_queue.get()
-                await process_message(future, settings_to_pipe)
+                future, settings = await self.image_queue.get()
+                await process_message(future, settings)
             except Exception as exception:
                 if self.logger:
                     self.logger.error(f"Diffuser encountered an error while generating:\n{exception}")
