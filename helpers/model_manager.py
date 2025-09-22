@@ -10,7 +10,7 @@ import torch
 import requests
 
 # import the diffuser pipelines
-from diffusers import (AutoencoderKL, AuraFlowPipeline, AuraFlowTransformer2DModel, FluxImg2ImgPipeline, FluxPipeline, FluxTransformer2DModel, 
+from diffusers import (AutoencoderKL, AuraFlowPipeline, AuraFlowTransformer2DModel, FluxImg2ImgPipeline, FluxPipeline, FluxTransformer2DModel, QwenImagePipeline, QwenImageImg2ImgPipeline, QwenImageTransformer2DModel,
    SD3Transformer2DModel, StableDiffusionImg2ImgPipeline, StableDiffusionPipeline, StableDiffusion3Pipeline, StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline, UNet2DConditionModel)
 # import the diffuser schedulers
 from diffusers import (EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler, DPMSolverSinglestepScheduler, HeunDiscreteScheduler, PNDMScheduler,
@@ -72,7 +72,7 @@ class Model_Manager(object):
         logger - logging object (default None)
         """
         self = Model_Manager()
-        self.accepted_pipelines = ['AuraFlow', 'Flux', 'SD 1', 'SD 2', 'SD 3', 'SDXL'] 
+        self.accepted_pipelines = ['AuraFlow', 'Flux', 'QwenImage', 'SD 1', 'SD 2', 'SD 3', 'SDXL'] 
         self.civitai_token = civitai_token
         self.models_in_queue = []
         self.default_model = default_model
@@ -235,17 +235,22 @@ class Model_Manager(object):
             path = str(self.models_path / model_pipeline / model_name)
             local_model_pipeline.save_pretrained(save_directory=path)
             del local_model_pipeline
- 
-        is_quantized = (path/'transformer'/'quantized.txt').exists() or (path/'unet'/'quantized.txt').exists()
+
         # Quantize the main part of the model to reduce it's size
+        is_quantized = Path(path, 'transformer', 'quantized.txt').exists() or Path(path, 'unet', 'quantized.txt').exists()
         if (self.save_as_4bit or self.save_as_8bit) and model_type == 'Checkpoint' and not is_quantized:
             transformer = None
             unet = None
+
             # These models need their transformer quantized
             if model_pipeline == 'AuraFlow':
                 torch_dtype = torch.float16
                 quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
                 transformer = AuraFlowTransformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
+            if model_pipeline == 'QwenImage':
+                torch_dtype = torch.float16
+                quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
+                transformer = QwenImageTransformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
             if model_pipeline == 'Flux':
                 torch_dtype = torch.bfloat16
                 quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
@@ -288,20 +293,21 @@ class Model_Manager(object):
                     self.logger.info(f"{model_name} ({path}) added.")
         return model_entry
 
-    def build_pipeline(self, settings_to_pipe:dict):
+    def build_pipeline(self, settings):
         """
         Select and build the image generation pipeline.
 
-        settings_to_pipe - dict containing the neccessary settings to build a pipeline and generate an image.  
+        settings - dict containing the neccessary settings to build a pipeline and generate an image.  
         """
-        seed = settings_to_pipe.pop('seed')
+        seed = settings.pop('seed')
         if seed == -1 or None:
             seed = int(time.time())
-        pipe_config = settings_to_pipe.copy()
-        settings_to_pipe['seed'] = seed
-        pipe_config['generator'] = [torch.Generator("cuda").manual_seed(seed+i) for i in range(pipe_config['batch_size'])]
-        model = pipe_config.pop('model')
+        settings['seed'] = seed
+        settings_to_pipe = settings.copy()
+        model = settings_to_pipe.pop('model')
         model_info = self.get_model_info(model)
+        pipe_config = {}
+        pipe_config['generator'] = [torch.Generator("cuda").manual_seed(seed+i) for i in range(settings['num_images_per_prompt'])]
        
         def load_lora_and_embeds(lora_and_embeds:list, pipeline_text2image):
             lora_adapters_and_weights = []
@@ -314,8 +320,8 @@ class Model_Manager(object):
                     if len(lora_adapters_and_weight) == 1:
                         # Add a default weight of 1.0 to the lora and correct it in the response...
                         weight = 1.0
-                        settings_to_pipe['lora_and_embeds'].remove(lora_or_embed)
-                        settings_to_pipe['lora_and_embeds'].insert(index, lora_or_embed+':1.0')
+                        settings['lora_and_embeds'].remove(lora_or_embed)
+                        settings['lora_and_embeds'].insert(index, lora_or_embed+':1.0')
                     else:
                         # ...Or use the provided weight.
                         try:
@@ -326,17 +332,20 @@ class Model_Manager(object):
                     lora_adapters_and_weights.append({'lora':lora, 'weight':weight})
                 else:
                     pipeline_text2image.load_textual_inversion(pretrained_model_name_or_path=lora_or_embed_info['path'], token=lora_or_embed_info['embedding_trigger'])
-                    if not lora_or_embed_info['embedding_trigger'] in settings_to_pipe['prompt']:
-                        settings_to_pipe['prompt'] = lora_or_embed_info['embedding_trigger']+' '+settings_to_pipe['prompt']
+                    if not lora_or_embed_info['embedding_trigger'] in settings['prompt']:
+                        settings['prompt'] = lora_or_embed_info['embedding_trigger']+' '+settings['prompt']
                     if ':' in lora_or_embed:
                         # Textual Inversion doesn't support weights so correct it for the response
-                        settings_to_pipe['lora_and_embeds'].remove(lora_or_embed)
-                        settings_to_pipe['lora_and_embeds'].insert(index, lora_or_embed.split(':')[0])
+                        settings['lora_and_embeds'].remove(lora_or_embed)
+                        settings['lora_and_embeds'].insert(index, lora_or_embed.split(':')[0])
             if lora_adapters_and_weights:
                 pipeline_text2image.set_adapters([lora['lora'] for lora in lora_adapters_and_weights], adapter_weights=[lora['weight'] for lora in lora_adapters_and_weights])
             return pipeline_text2image
 
-        def aura_flow(model_info:dict=model_info, pipe_config:dict=pipe_config):
+        def aura_flow(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, model_info:dict=model_info, **kwargs):
+            """
+            Build a pipeline for an AuraFlow model.
+            """
             pipeline = self.get_pipeline(model_info['model_pipeline'])
             torch_dtype = torch.float16
 
@@ -348,11 +357,11 @@ class Model_Manager(object):
                 vae=None
             ).to('cuda')
             (
-                pipe_config['prompt_embeds'], 
-                pipe_config['prompt_attention_mask'], 
-                pipe_config['negative_prompt_embeds'], 
-                pipe_config['negative_prompt_attention_mask']
-            ) = pipeline_text2image.encode_prompt(prompt=pipe_config.pop('prompt'), negative_prompt=pipe_config.pop('negative_prompt', None), num_images_per_prompt=pipe_config.pop('batch_size'), max_sequence_length=512, 
+                prompt_embeds, 
+                prompt_attention_mask, 
+                negative_prompt_embeds, 
+                negative_prompt_attention_mask
+            ) = pipeline_text2image.encode_prompt(prompt=prompt, negative_prompt=negative_prompt, num_images_per_prompt=num_images_per_prompt, max_sequence_length=512, 
                 device='cuda')
             del pipeline_text2image
 
@@ -362,17 +371,162 @@ class Model_Manager(object):
                 torch_dtype=torch.float16,
                 variant='fp16'
             ).to('cuda')
+            pipe_config['guidance_scale'] = guidance_scale
+            pipe_config['height'] = height
+            pipe_config['num_inference_steps'] = num_inference_steps
+            pipe_config['num_images_per_prompt'] = num_images_per_prompt
+            pipe_config['negative_prompt_attention_mask'] = negative_prompt_attention_mask
+            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
+            pipe_config['prompt_attention_mask'] = prompt_attention_mask
+            pipe_config['prompt_embeds'] = prompt_embeds
+            pipe_config['width'] = width
 
             return pipeline_text2image, pipe_config
 
-        def stable_diffusion(model_info:dict=model_info, pipe_config:dict=pipe_config, hires_run=False):
+        def flux(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, init_image:str=None, init_strength:float=None, lora_and_embeds:list=None, 
+            model_info:dict=model_info, negative_prompt:str=None, hires_fix:bool=None, hires_strength:float=None, **kwargs):
+            """
+            Build a pipeline for a Flux model.
+            """
+            torch_dtype = torch.bfloat16
+
+            model_pipeline = model_info['model_pipeline'] 
+            if init_image:
+                model_pipeline += "Img2Img"
+            pipeline = self.get_pipeline(model_pipeline)
+            
+            # get our encoded prompt latents so we don't have to load the text encoders during generation
+            pipeline_text2image = pipeline.from_pretrained(
+                model_info['path'],
+                torch_dtype=torch_dtype,
+                transformer=None,
+                vae=None
+            ).to('cuda')
+
+            prompt_embeds, pooled_prompt_embeds, _ = pipeline_text2image.encode_prompt(prompt=prompt, prompt_2=None, max_sequence_length=512, device='cuda')
+            negative_prompt_embeds, negative_pooled_prompt_embeds, _ = pipeline_text2image.encode_prompt(prompt=negative_prompt, prompt_2=None, max_sequence_length=512, device='cuda')
+            del pipeline_text2image
+
+            pipeline_text2image = pipeline.from_pretrained(
+                model_info['path'],
+                text_encoder=None,
+                text_encoder_2=None,
+                torch_dtype=torch_dtype,
+            ).to('cuda')
+
+            # Memory and speed optmisation
+            pipeline_text2image.vae.enable_vae_slicing()
+            pipeline_text2image.vae.enable_vae_tiling()
+
+            # Load additional networks
+            if lora_and_embeds:
+                pipeline_text2image = load_lora_and_embeds(lora_and_embeds, pipeline_text2image)
+            
+            # Finalise pipe_config
+            if hires_fix:
+                # Prepare pipeline for hires_fix by shrinking initial dimensions.
+                model_res = 768
+                while width > model_res and height > model_res:
+                    width -= 8
+                    height -= 8
+            if init_image:
+                # prepare init image
+                init_image = load_image(init_image)
+                init_image = resize_and_crop_centre(init_image, width, height)
+                pipe_config['image'] = init_image * num_images_per_prompt
+                pipe_config['strength'] = init_strength
+            pipe_config['guidance_scale'] = guidance_scale
+            pipe_config['height'] = height
+            pipe_config['num_inference_steps'] = num_inference_steps
+            pipe_config['num_images_per_prompt'] = num_images_per_prompt
+            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
+            pipe_config['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+            pipe_config['prompt_embeds'] = prompt_embeds
+            pipe_config['pooled_prompt_embeds'] = pooled_prompt_embeds
+            pipe_config['width'] = width
+
+            return pipeline_text2image, pipe_config
+
+        def qwen_image(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, init_image:str=None, init_strength:float=None, lora_and_embeds:list=None, 
+            model_info:dict=model_info, negative_prompt:str=None, hires_fix:bool=None, hires_strength:float=None, **kwargs):
+            """
+            Build a pipeline for a QwenImage model.
+            """
+            torch_dtype = torch.float16
+            model_pipeline = model_info['model_pipeline'] 
+            if init_image:
+                model_pipeline += "Img2Img"
+            pipeline = self.get_pipeline(model_pipeline)
+
+            # encode the prompt
+            pipeline_text2image = pipeline.from_pretrained(
+                model_info['path'],
+                torch_dtype=torch_dtype,
+                transformer=None,
+                vae=None,
+                variant='fp16'
+            ).to('cuda')
+
+            prompt_embeds, prompt_embeds_mask = pipeline_text2image.encode_prompt(prompt=prompt, num_images_per_prompt=num_images_per_prompt, max_sequence_length=1024, device='cuda')
+            negative_prompt_embeds, negative_prompt_embeds_mask = pipeline_text2image.encode_prompt(prompt=negative_prompt, num_images_per_prompt=num_images_per_prompt, max_sequence_length=1024, device='cuda')
+            del pipeline_text2image
+
+            pipeline_text2image = pipeline.from_pretrained(
+                model_info['path'],
+                text_encoder=None,
+                tokenizer=None,
+                torch_dtype=torch_dtype,
+            ).to('cuda')
+
+            # Memory and speed optmisation
+            pipeline_text2image.enable_vae_slicing()
+            pipeline_text2image.enable_vae_tiling()
+
+            # Load additional networks
+            if lora_and_embeds:
+                pipeline_text2image = load_lora_and_embeds(lora_and_embeds, pipeline_text2image)
+            
+            # Finalise pipe_config
+            if hires_fix:
+                # Prepare pipeline for hires_fix by shrinking initial dimensions.
+                model_res = 768
+                while width > model_res and height > model_res:
+                    width -= 8
+                    height -= 8
+            if init_image:
+                # prepare init image
+                init_image = load_image(init_image)
+                init_image = resize_and_crop_centre(init_image, width, height)
+                pipe_config['image'] = init_image * num_images_per_prompt
+                pipe_config['strength'] = init_strength
+
+            # guidance_scale is there to support future guidance-distilled models when they come up. It is ignored when not using guidance distilled models. 
+            # To enable traditional classifier-free guidance, please pass true_cfg_scale > 1.0 and negative_prompt
+            # https://huggingface.co/docs/diffusers/main/en/api/pipelines/qwenimage#diffusers.QwenImagePipeline.__call__
+            pipe_config['true_cfg_scale'] = guidance_scale
+            pipe_config['guidance_scale'] = guidance_scale
+
+            pipe_config['height'] = height
+            pipe_config['num_inference_steps'] = num_inference_steps
+            pipe_config['num_images_per_prompt'] = num_images_per_prompt
+            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
+            pipe_config['prompt_embeds_mask'] = negative_pooled_prompt_embeds
+            pipe_config['prompt_embeds'] = prompt_embeds
+            pipe_config['prompt_embeds_mask'] = pooled_prompt_embeds
+            pipe_config['width'] = width
+
+            return pipeline_text2image, pipe_config
+
+        def stable_diffusion(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, scheduler:str, width:int, init_image:str=None, init_strength:float=None, 
+            lora_and_embeds:list=None, model_info:dict=model_info, negative_prompt:str=None, hires_fix:bool=None, hires_strength:float=None, **kwargs):
             """
             Build a pipeline for a pre SD 3 stable diffusion model.
             """
             torch_dtype = torch.float16
-            init_image = pipe_config.pop('init_image', None)
-            hires_run = pipe_config.pop('hires_run', False)
-            pipeline = self.get_pipeline(model_info['model_pipeline'] if not init_image and not hires_run else model_info['model_pipeline']+'Img2Img')
+            model_pipeline = model_info['model_pipeline'] 
+            if init_image:
+                model_pipeline += "Img2Img"
+            pipeline = self.get_pipeline(model_pipeline)
             
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
@@ -385,40 +539,43 @@ class Model_Manager(object):
             pipeline_text2image.enable_vae_slicing()
 
             # Use the specified scheduler
-            pipeline_scheduler = self.get_scheduler(model_info['model_pipeline'], pipe_config.pop('scheduler', None))
+            pipeline_scheduler = self.get_scheduler(model_info['model_pipeline'], scheduler)
             pipeline_text2image.scheduler = pipeline_scheduler.from_config(pipeline_text2image.scheduler.config)
+            # implement non-k schedulers
             pipeline_text2image.scheduler.use_karras_sigmas=True
             
             # Load additional networks
-            lora_and_embeds = pipe_config.pop('lora_and_embeds', None)
             if lora_and_embeds:
                 pipeline_text2image = load_lora_and_embeds(lora_and_embeds, pipeline_text2image)
 
             # Finalise pipe_config
-            pipe_config['num_images_per_prompt'] = pipe_config.pop('batch_size')
-            if not hires_run:
-                if pipe_config.pop('hires_fix', False):
-                    # Prepare pipeline for hires_fix by shrinking initial dimensions.
-                    model_res = pipeline_text2image.unet.config.sample_size * pipeline_text2image.vae_scale_factor
-                    while pipe_config['width'] > model_res and pipe_config['height'] > model_res:
-                        pipe_config['width'] -= 8
-                        pipe_config['height'] -= 8
-                    pipe_config.pop('hires_strength')
-                if init_image:
-                    # prepare init image
-                    init_image = load_image(init_image)
-                    init_image = resize_and_crop_centre(init_image, pipe_config['width'], pipe_config['height'])
-                    pipe_config['image'] = init_image * pipe_config['num_images_per_prompt']
-                    pipe_config['strength'] = pipe_config.pop('init_strength') 
-            else:
-                pipe_config.pop('init_strength', None) 
-                pipe_config.pop('hires_fix')   
-                pipe_config['image'] = init_image
-                pipe_config['strength'] = pipe_config.pop('hires_strength')
+            if hires_fix:
+                # Prepare pipeline for hires_fix by shrinking initial dimensions.
+                model_res = pipeline_text2image.unet.config.sample_size * pipeline_text2image.vae_scale_factor
+                while width > model_res and height > model_res:
+                    width -= 8
+                    height -= 8
+            if init_image:
+                # prepare init image
+                init_image = load_image(init_image)
+                init_image = resize_and_crop_centre(init_image, width, height)
+                pipe_config['image'] = init_image * num_images_per_prompt
+                pipe_config['strength'] = init_strength
+            pipe_config['clip_skip'] = clip_skip
+            pipe_config['guidance_scale'] = guidance_scale
+            pipe_config['height'] = height
+            pipe_config['num_inference_steps'] = num_inference_steps
+            pipe_config['num_images_per_prompt'] = num_images_per_prompt
+            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
+            pipe_config['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+            pipe_config['prompt_embeds'] = prompt_embeds
+            pipe_config['pooled_prompt_embeds'] = pooled_prompt_embeds
+            pipe_config['width'] = width
 
             return pipeline_text2image, pipe_config
 
-        def stable_diffusion_3(model_info:dict=model_info, pipe_config:dict=pipe_config):
+        def stable_diffusion_3(clip_skip:int, guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, negative_prompt:str=None, model_info:dict=model_info,
+            **kwargs):
             """
             Build a pipeline for a stable diffusion 3 model.
             """
@@ -434,13 +591,13 @@ class Model_Manager(object):
                 variant='fp16'
             ).to('cuda')
             (
-                pipe_config['prompt_embeds'], 
-                pipe_config['negative_prompt_embeds'], 
-                pipe_config['pooled_prompt_embeds'], 
-                pipe_config['negative_pooled_prompt_embeds']
-            ) = pipeline_text2image.encode_prompt(prompt=pipe_config.get('prompt'), prompt_2=pipe_config.get('prompt'), prompt_3=pipe_config.pop('prompt'), negative_prompt=pipe_config.get('negative_prompt', None), 
-                negative_prompt_2=pipe_config.get('negative_prompt', None), negative_prompt_3=pipe_config.pop('negative_prompt', None), num_images_per_prompt= pipe_config.pop('batch_size'), max_sequence_length=512, 
-                clip_skip=pipe_config.pop('clip_skip', None), device='cuda')
+                prompt_embeds, 
+                negative_prompt_embeds, 
+                pooled_prompt_embeds, 
+                negative_pooled_prompt_embeds
+            ) = pipeline_text2image.encode_prompt(prompt=prompt, prompt_2=prompt, prompt_3=prompt, negative_prompt=negative_prompt, 
+                negative_prompt_2=negative_prompt, negative_prompt_3=negative_prompt, num_images_per_prompt= num_images_per_prompt, max_sequence_length=512, 
+                clip_skip=clip_skip, device='cuda')
             del pipeline_text2image
             
             pipeline_text2image = pipeline.from_pretrained(
@@ -453,86 +610,28 @@ class Model_Manager(object):
                 variant='fp16'
             ).to('cuda')
 
-            return pipeline_text2image, pipe_config
-
-        def flux(model_info:dict=model_info, pipe_config:dict=pipe_config):
-            """
-            Build a pipeline for an Flux model.
-            """
-            torch_dtype = torch.bfloat16
-            init_image = pipe_config.pop('init_image', None)
-            hires_run = pipe_config.pop('hires_run', False)
-
-            # FluxImg2ImgPipeline is lacking in attributes so we need to make the distinction a lot of times.
-            model_pipeline = model_info['model_pipeline'] 
-            if init_image or hires_run:
-                model_pipeline += "Img2Img"
-            pipeline = self.get_pipeline(model_pipeline)
-            
-            # get our encoded prompt latents so we don't have to load the text encoders during generation
-            pipeline_text2image = pipeline.from_pretrained(
-                model_info['path'],
-                torch_dtype=torch_dtype,
-                transformer=None,
-                vae=None
-            ).to('cuda')
-            pipe_config['prompt_embeds'], pipe_config['pooled_prompt_embeds'], _ = pipeline_text2image.encode_prompt(prompt=pipe_config.pop('prompt'), prompt_2=None, max_sequence_length=512, device='cuda')
-            if not init_image and not hires_run:
-                pipe_config['negative_prompt_embeds'], pipe_config['negative_pooled_prompt_embeds'], _ = pipeline_text2image.encode_prompt(prompt=pipe_config.pop('negative_prompt'), prompt_2=None, max_sequence_length=512, device='cuda')
-            else:
-                pipe_config.pop('negative_prompt')
-            del pipeline_text2image
-
-            pipeline_text2image = pipeline.from_pretrained(
-                model_info['path'],
-                text_encoder=None,
-                text_encoder_2=None,
-                torch_dtype=torch_dtype,
-            ).to('cuda')
-
-            # Memory and speed optmisation
-            # doesnt work with the img2img pipeline?
-            if not init_image and not hires_run:
-                pipeline_text2image.enable_vae_slicing()
-                pipeline_text2image.enable_vae_tiling()
-
-            # Load additional networks
-            lora_and_embeds = pipe_config.pop('lora_and_embeds', None)
-            if lora_and_embeds:
-                pipeline_text2image = load_lora_and_embeds(lora_and_embeds, pipeline_text2image)
-            
             # Finalise pipe_config
-            pipe_config['num_images_per_prompt'] = pipe_config.pop('batch_size')
-            if hires_run:
-                pipe_config.pop('init_strength', None) 
-                pipe_config.pop('hires_fix')   
-                pipe_config['image'] = init_image
-                pipe_config['strength'] = pipe_config.pop('hires_strength')    
-            else:   
-                if pipe_config.pop('hires_fix', False):
-                    # Prepare pipeline for hires_fix by shrinking initial dimensions.
-                    model_res = 1024
-                    while pipe_config['width'] > model_res and pipe_config['height'] > model_res:
-                        pipe_config['width'] -= 8
-                        pipe_config['height'] -= 8
-                    pipe_config.pop('hires_strength')
-                if init_image:
-                    # prepare init image
-                    init_image = load_image(init_image)
-                    init_image = resize_and_crop_centre(init_image, pipe_config['width'], pipe_config['height'])
-                    pipe_config['image'] = init_image * pipe_config['num_images_per_prompt']
-                    pipe_config['strength'] = pipe_config.pop('init_strength') 
+            pipe_config['guidance_scale'] = guidance_scale
+            pipe_config['height'] = height
+            pipe_config['num_inference_steps'] = num_inference_steps
+            pipe_config['num_images_per_prompt'] = num_images_per_prompt
+            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
+            pipe_config['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+            pipe_config['prompt_embeds'] = prompt_embeds
+            pipe_config['pooled_prompt_embeds'] = pooled_prompt_embeds
+            pipe_config['width'] = width
+
             return pipeline_text2image, pipe_config
 
         pipeline_text2image = {
             'AuraFlow': aura_flow,
+            'Flux': flux,
+            'QwenImage': qwen_image,
             'SD 1': stable_diffusion,
             'SD 2': stable_diffusion,
             'SD 3': stable_diffusion_3,
-            'SDXL': stable_diffusion,
-            'Flux': flux
+            'SDXL': stable_diffusion
         }.get(model_info['model_pipeline'])
-
         return pipeline_text2image
 
     def get_download_dict(self, url_or_repo:str):
@@ -557,6 +656,10 @@ class Model_Manager(object):
             model_name = url_or_repo.split('/')[-1].replace('.', '_').replace('-','_')
             if 'AuraFlow' in url_or_repo:
                 model_pipeline = 'AuraFlow'
+            elif 'FLUX' in url_or_repo:
+                model_pipeline = 'Flux'
+            elif 'Qwen-Image' in url_or_repo:
+                model_pipeline = 'QwenImage'
             elif 'stable-diffusion-v1-5' in url_or_repo:
                 model_pipeline = 'SD 1'
             elif 'stable-diffusion-2' in url_or_repo:
@@ -565,20 +668,19 @@ class Model_Manager(object):
                 model_pipeline = 'SD 3'
             elif 'stable-diffusion-xl' in url_or_repo:
                 model_pipeline = 'SDXL'
-            elif 'FLUX' in url_or_repo:
-                model_pipeline = 'Flux'
             else:
                 raise ValueError(f'Huggingface link leads to an unsupported model. Accepted models are {self.accepted_pipelines}.')
             download_dict.update({'model_pipeline':model_pipeline, 'model_type':"Checkpoint", 'model_name':model_name, 'url_or_repo':url_or_repo})
         else:
-            model_id = url_or_repo.split('/')[-1]
+            sub_model_id = url_or_repo.split('/')[-1]
+            model_id = url_or_repo.split('/')[-2]
             api_url = f'https://civitai.com/api/v1/models/{model_id}'
             response = requests.get(api_url)
             response = response.json()
             # Which version of the model do we want?
-            if '?modelVersionId=' in model_id:
+            if '?modelVersionId=' in sub_model_id:
                 try:
-                    model_version = model_id[model_id.rfind('?modelVersionId=')+16:]
+                    model_version = sub_model_id[sub_model_id.rfind('?modelVersionId=')+16:]
                     chosen_model = [version for version in response['modelVersions'] if str(version['id']) == model_version]
                 except:
                     raise ValueError('Unable to retreive model version from the url.')
@@ -588,7 +690,7 @@ class Model_Manager(object):
                     chosen_model = response['modelVersions'][0]
             else:
                 chosen_model = response['modelVersions'][0]
-
+            
             if response['type'] in ['Checkpoint', 'TextualInversion', 'LORA']:
                 chosen_file = [file for file in chosen_model['files'] if file['type'] == 'Model'][0]
                 vae_list = [file for file in chosen_model['files'] if file['type'] == 'VAE']
@@ -597,8 +699,11 @@ class Model_Manager(object):
                 
                 # Get the model's pipeline.    
                 if 'AuraFlow' in chosen_model['baseModel']:
-                    raise ValueError('AuraFlowTransformer2DModel.from_single_file is not supported yet.')
                     model_pipeline = 'AuraFlow'
+                elif 'Flux' in chosen_model['baseModel']:
+                    model_pipeline = 'Flux'
+                elif 'Qwen' in chosen_model['baseModel']:
+                    raise NotImplementedError('There is no from_single_file to load a QwenImage checkpoint from diffusers.')
                 elif 'SD 1' in chosen_model['baseModel']:
                     model_pipeline = 'SD 1'
                 elif 'SD 2' in chosen_model['baseModel']:
@@ -607,8 +712,6 @@ class Model_Manager(object):
                     model_pipeline = 'SD 3'
                 elif 'SDXL' in chosen_model['baseModel']:
                     model_pipeline = 'SDXL'
-                elif 'Flux' in chosen_model['baseModel']:
-                    model_pipeline = 'Flux'
                 else:
                     raise ValueError(f'Civitai link leads to an unsupported model. Accepted models are {self.accepted_pipelines}.')
 
@@ -657,6 +760,8 @@ class Model_Manager(object):
             "AuraFlow": AuraFlowPipeline,
             "Flux": FluxPipeline,
             "FluxImg2Img": FluxImg2ImgPipeline,
+            "QwenImage": QwenImagePipeline,
+            "QwenImageImg2ImgPipeline":QwenImageImg2ImgPipeline,
             "SD 1": StableDiffusionPipeline,
             "SD 1Img2Img": StableDiffusionImg2ImgPipeline,
             "SD 2": StableDiffusionPipeline,
@@ -778,7 +883,7 @@ class Model_Manager(object):
                 pipeline = self.get_pipeline(model_pipeline)
 
                 # Pipeline sourced from the fp16 variant
-                if model_pipeline not in ['Flux']:
+                if model_pipeline not in ['Flux', 'QwenImage']:
                     local_model_pipeline = pipeline.from_pretrained(
                         url_or_repo,
                         torch_dtype=torch.float16,
