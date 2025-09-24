@@ -599,6 +599,9 @@ class Model_Manager(object):
         else:
             sub_model_id = url_or_repo.split('/')[-1]
             model_id = url_or_repo.split('/')[-2]
+            if model_id == 'models':
+                model_id = sub_model_id.split('?')[0]
+                sub_model_id = sub_model_id.replace(model_id, '')
             api_url = f'https://civitai.com/api/v1/models/{model_id}'
             response = requests.get(api_url)
             response = response.json()
@@ -855,7 +858,6 @@ class Model_Manager(object):
             future.set_result(model_dict)
             
         while True:
-            import traceback
             try:
                 model_or_download_dict, future, model_owner = await self.model_queue.get()
                 if model_or_download_dict.get('url_or_repo', None):
@@ -863,8 +865,6 @@ class Model_Manager(object):
                 else: 
                     await self.add_local_model(**model_or_download_dict)    
             except Exception as exception:
-                print(traceback.format_exc())
-
                 if self.logger:
                     self.logger.error(f"Model manager encountered an error while adding {model_or_download_dict['model_name']}:\n{exception}")
                 if future:
