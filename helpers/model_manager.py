@@ -23,6 +23,39 @@ from pathlib import Path
 from PIL import Image
 from transformers import T5EncoderModel, BitsAndBytesConfig as TransformersBitsAndBytesConfig
 
+def resize_and_crop_centre(images:[Image], new_width:int, new_height:int) -> [Image]:
+    """
+    Rescales an image to different dimensions without distorting the image.
+
+    images - PIL image or list of PIL images that need to be transformed.
+    new_width - int of the desired image width.
+    new_height - int of the desired image height.
+    """
+    if not isinstance(images, list):
+        images = [images]
+
+    rescaled_images = []
+    for image in images:
+        img_width, img_height = image.size
+        width_factor, height_factor = new_width/img_width, new_height/img_height
+        factor = max(width_factor, height_factor)
+        image = image.resize((int(factor*img_width), int(factor*img_height)), Image.LANCZOS)
+
+        img_width, img_height = image.size
+        width_factor, height_factor = new_width/img_width, new_height/img_height
+        left, top, right, bottom = 0, 0, img_width, img_height
+        if width_factor <= 1.5:
+            crop_width = int((new_width-img_width)/-2)
+            left = left + crop_width
+            right = right - crop_width
+        if height_factor <= 1.5:
+            crop_height = int((new_height-img_height)/-2)
+            top = top + crop_height
+            bottom = bottom - crop_height
+        image = image.crop((left, top, right, bottom))
+        rescaled_images.append(image)
+    return rescaled_images
+    
 def download_file(file_path:str or Path, url:str, authorization_token:str=None, retries:int=3) -> Path:
     """
     Download and store a file using chunked download writing with optional authorization. Will retry a certain amount of times if something errors.
@@ -62,13 +95,15 @@ def rmdir(directory):
 
 class Model_Manager(object):
     @classmethod
-    async def create(cls, civitai_token='', default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', save_as_4bit:bool=True, save_as_8bit:bool=False, models_path:str='', logger=None) -> object:
+    async def create(cls, civitai_token=None, default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', models_path:str='', save_as_4bit:bool=True, save_as_8bit:bool=False, logger=None) -> object:
         """
         Creates and returns an asyncio model_manager object.
 
-        civitai_token - An authenticator token for the civitai api, which is required when downloading some models from the site.
-        models_path - str or pathlike object with the intended location for the models. (default '')
+        civitai_token - str authenticator token for the civitai api, which is required when downloading some models from the site.
         default_model - huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
+        models_path - str or path to where the models will be downloaded to. (default '')
+        save_as_4bit - bool which sets whether models are reduced to 4bit quantization when they are downloaded or added. (default None)
+        save_as_8bit - bool which sets whether models are reduced to 8bit quantization when they are downloaded or added. Is ignored if save_as_4bit is true. (default None)
         logger - logging object (default None)
         """
         self = Model_Manager()
@@ -211,8 +246,7 @@ class Model_Manager(object):
         vae_checkpoint_path - str leading to an external SD vae to convert and add to the pipeline. (default None)
         """
         torch_dtype = torch.float16
-        print(1)
-        if model_type == 'Checkpoint' and convert_checkpoint_to_diffuser and not 'snapshots' in path:
+        if model_type == 'Checkpoint' and convert_checkpoint_to_diffuser and not 'snapshots' in str(path):
             if model_pipeline == 'AuraFlow':
                 raise NotImplementedError('AuraFlowTransformer2DModel.from_single_file is not supported yet.')
                 #local_model_pipeline = auraflow_checkpoint_to_diffuser(checkpoint_path=path)
@@ -258,8 +292,8 @@ class Model_Manager(object):
                 quantization_config = DiffusersBitsAndBytesConfig(load_in_4bit=self.save_as_4bit, load_in_8bit=self.save_as_8bit, bnb_4bit_compute_dtype=torch_dtype)
                 transformer = SD3Transformer2DModel.from_pretrained(path, subfolder='transformer', torch_dtype=torch_dtype, quantization_config=quantization_config)
             if transformer:
-                rmdir((path/'transformer'))
-                transformer.save_pretrained(save_directory=path/'transformer')
+                rmdir(Path(path, 'transformer'))
+                transformer.save_pretrained(save_directory=Path(path, 'transformer'))
                 del transformer
                 content = 'savedas4bit' if self.save_as_4bit else 'savedas8bit'
                 with open(path/'transformer'/'quantized.txt', 'w') as file: 
@@ -291,21 +325,21 @@ class Model_Manager(object):
                     self.logger.info(f"{model_name} ({path}) added.")
         return model_entry
 
-    def build_pipeline(self, settings):
+    def build_pipeline(self, settings_to_pipe):
         """
         Select and build the image generation pipeline.
 
-        settings - dict containing the neccessary settings to build a pipeline and generate an image.  
+        settings_to_pipe - dict containing the neccessary settings to build a pipeline and generate an image.  
         """
-        seed = settings.pop('seed')
+        seed = settings_to_pipe.pop('seed')
         if seed == -1 or None:
             seed = int(time.time())
-        settings['seed'] = seed
-        settings_to_pipe = settings.copy()
+        settings_to_pipe['seed'] = seed
+        settings_to_pipe = settings_to_pipe.copy()
         model = settings_to_pipe.pop('model')
         model_info = self.get_model_info(model)
         pipe_config = {}
-        pipe_config['generator'] = [torch.Generator("cuda").manual_seed(seed+i) for i in range(settings['num_images_per_prompt'])]
+        pipe_config['generator'] = [torch.Generator("cuda").manual_seed(seed+i) for i in range(settings_to_pipe['num_images_per_prompt'])]
        
         def load_lora_and_embeds(lora_and_embeds:list, pipeline_text2image):
             lora_adapters_and_weights = []
@@ -318,8 +352,8 @@ class Model_Manager(object):
                     if len(lora_adapters_and_weight) == 1:
                         # Add a default weight of 1.0 to the lora and correct it in the response...
                         weight = 1.0
-                        settings['lora_and_embeds'].remove(lora_or_embed)
-                        settings['lora_and_embeds'].insert(index, lora_or_embed+':1.0')
+                        settings_to_pipe['lora_and_embeds'].remove(lora_or_embed)
+                        settings_to_pipe['lora_and_embeds'].insert(index, lora_or_embed+':1.0')
                     else:
                         # ...Or use the provided weight.
                         try:
@@ -330,12 +364,12 @@ class Model_Manager(object):
                     lora_adapters_and_weights.append({'lora':lora, 'weight':weight})
                 else:
                     pipeline_text2image.load_textual_inversion(pretrained_model_name_or_path=lora_or_embed_info['path'], token=lora_or_embed_info['embedding_trigger'])
-                    if not lora_or_embed_info['embedding_trigger'] in settings['prompt']:
-                        settings['prompt'] = lora_or_embed_info['embedding_trigger']+' '+settings['prompt']
+                    if not lora_or_embed_info['embedding_trigger'] in settings_to_pipe['prompt']:
+                        settings_to_pipe['prompt'] = lora_or_embed_info['embedding_trigger']+' '+settings_to_pipe['prompt']
                     if ':' in lora_or_embed:
                         # Textual Inversion doesn't support weights so correct it for the response
-                        settings['lora_and_embeds'].remove(lora_or_embed)
-                        settings['lora_and_embeds'].insert(index, lora_or_embed.split(':')[0])
+                        settings_to_pipe['lora_and_embeds'].remove(lora_or_embed)
+                        settings_to_pipe['lora_and_embeds'].insert(index, lora_or_embed.split(':')[0])
             if lora_adapters_and_weights:
                 pipeline_text2image.set_adapters([lora['lora'] for lora in lora_adapters_and_weights], adapter_weights=[lora['weight'] for lora in lora_adapters_and_weights])
             return pipeline_text2image
@@ -413,8 +447,8 @@ class Model_Manager(object):
             ).to('cuda')
 
             # Memory and speed optmisation
-            pipeline_text2image.vae.enable_vae_slicing()
-            pipeline_text2image.vae.enable_vae_tiling()
+            pipeline_text2image.vae.enable_slicing()
+            pipeline_text2image.vae.enable_tiling()
 
             # Load additional networks
             if lora_and_embeds:
@@ -659,7 +693,7 @@ class Model_Manager(object):
 
     def get_model_info(self, model_name:str) -> dict:
         """
-        Search existing models to see if exists, and return it's settings.
+        Search existing models to see if exists, and return it's settings_to_pipe.
 
         model_name - str identifying the model. 
         """
