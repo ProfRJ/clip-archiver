@@ -108,7 +108,7 @@ def custom_convert_ldm_vae_checkpoint(checkpoint, config):
     conv_attn_to_linear(new_checkpoint)
     return new_checkpoint
 
-def vae_pt_to_vae_diffuser(base_model:str, vae_checkpoint_path:str, save_pretrained_vae_path:str):
+def vae_pt_to_vae_diffuser(base_model:str, vae_checkpoint_path:str) -> AutoencoderKL:
     """Function for converting pt files to diffuser accepted safetensors taken from https://github.com/huggingface/diffusers/blob/main/scripts/convert_vae_pt_to_diffusers.py"""
     vae_checkpoint_path = str(vae_checkpoint_path)
     if 'SD 1' in base_model:
@@ -139,4 +139,4 @@ def vae_pt_to_vae_diffuser(base_model:str, vae_checkpoint_path:str, save_pretrai
     converted_vae_checkpoint = custom_convert_ldm_vae_checkpoint(checkpoint, vae_config)
     vae = AutoencoderKL(**vae_config)
     vae.load_state_dict(converted_vae_checkpoint)
-    vae.save_pretrained(save_pretrained_vae_path)
+    return vae

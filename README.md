@@ -16,6 +16,8 @@ Windows: `.venv\Scripts\activate.bat`
 ## Basic Usage:
 - Create the Object: 
 ```
+from helpers import CLIP_Archiver
+
 clip_archiver = await CLIP_Archiver.create(
     default_model='stable-diffusion-v1-5/stable-diffusion-v1-5', # huggingface repos or civitai links are accepted.
     models_path='models/path', # Can be a full path, or a name for the subfolder
@@ -34,7 +36,6 @@ Beyond that, you can also include other arguments:
 | Parameter            | Type   | Description                                                                                       |
 |----------------------|--------|---------------------------------------------------------------------------------------------------|
 | `prompt`             | str    | Text describing the desired image.                                                                |
-| `batch_size`         | int    | Amount of images to be generated together.                                                        |
 | `clip_skip`*         | int    | Represents which layer of CLIP to skip to, potentially resulting in more accurate images.         |
 | `guidance_scale`     | int    | Represents how accurate to the prompt the image will be; lower values lean toward normal output.  |
 | `height`             | int    | Height of the image in pixels.                                                                    |
@@ -45,6 +46,7 @@ Beyond that, you can also include other arguments:
 | `lora_and_embeds`*   | list   | List of textual inversion embeds and LORAs with their respective weights (e.g., `lora:1`).        |
 | `model`              | str    | The txt2img model to use for generation.                                                          |
 | `negative_prompt`    | str    | Text describing unwanted aspects of the image.                                                    |
+| `num_images_per_prompt`| int    | Amount of images to be generated together.                                                      |
 | `num_inference_steps`| int    | Number of iterations the image will go through.                                                   |
 | `preset_name`        | str    | Preset name to save the preset under (default: `_intermediate`).                                  |
 | `user`               | str    | Profile to save the preset under (default: `system`).                                             |
