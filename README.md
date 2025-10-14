@@ -36,7 +36,6 @@ Beyond that, you can also include other arguments:
 | Parameter            | Type   | Description                                                                                       |
 |----------------------|--------|---------------------------------------------------------------------------------------------------|
 | `prompt`             | str    | Text describing the desired image.                                                                |
-| `batch_size`         | int    | Amount of images to be generated together.                                                        |
 | `clip_skip`*         | int    | Represents which layer of CLIP to skip to, potentially resulting in more accurate images.         |
 | `guidance_scale`     | int    | Represents how accurate to the prompt the image will be; lower values lean toward normal output.  |
 | `height`             | int    | Height of the image in pixels.                                                                    |
@@ -47,6 +46,7 @@ Beyond that, you can also include other arguments:
 | `lora_and_embeds`*   | list   | List of textual inversion embeds and LORAs with their respective weights (e.g., `lora:1`).        |
 | `model`              | str    | The txt2img model to use for generation.                                                          |
 | `negative_prompt`    | str    | Text describing unwanted aspects of the image.                                                    |
+| `num_images_per_prompt`| int    | Amount of images to be generated together.                                                      |
 | `num_inference_steps`| int    | Number of iterations the image will go through.                                                   |
 | `preset_name`        | str    | Preset name to save the preset under (default: `_intermediate`).                                  |
 | `user`               | str    | Profile to save the preset under (default: `system`).                                             |
