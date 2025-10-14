@@ -95,12 +95,13 @@ def rmdir(directory):
 
 class Model_Manager(object):
     @classmethod
-    async def create(cls, civitai_token=None, default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', models_path:str='', save_as_4bit:bool=True, save_as_8bit:bool=False, logger=None) -> object:
+    async def create(cls, civitai_token=None, default_model:str='stable-diffusion-v1-5/stable-diffusion-v1-5', huggingface_token=None, models_path:str='', save_as_4bit:bool=True, save_as_8bit:bool=False, logger=None) -> object:
         """
         Creates and returns an asyncio model_manager object.
 
         civitai_token - str authenticator token for the civitai api, which is required when downloading some models from the site.
-        default_model - huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
+        default_model - str huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
+        huggingface_token - str optional huggingface user access token. (default None)
         models_path - str or path to where the models will be downloaded to. (default '')
         save_as_4bit - bool which sets whether models are reduced to 4bit quantization when they are downloaded or added. (default None)
         save_as_8bit - bool which sets whether models are reduced to 8bit quantization when they are downloaded or added. Is ignored if save_as_4bit is true. (default None)
@@ -111,6 +112,7 @@ class Model_Manager(object):
         self.civitai_token = civitai_token
         self.models_in_queue = []
         self.default_model = default_model
+        self.huggingface_token = huggingface_token
         self.models_path = Path(models_path) if models_path else Path('models') 
         self.download_worker = asyncio.create_task(self._download_worker())
         if save_as_4bit and save_as_8bit:
@@ -847,14 +849,16 @@ class Model_Manager(object):
                         torch_dtype=torch.float16,
                         variant="fp16",
                         use_safetensors=True,
-                        cache_dir=self.models_path / model_pipeline
+                        cache_dir=self.models_path / model_pipeline,
+                        token=self.huggingface_token
                     )
                 else:
                     local_model_pipeline = pipeline.from_pretrained(
                         url_or_repo,
                         torch_dtype=torch.float16,
                         use_safetensors=True,
-                        cache_dir=self.models_path / model_pipeline
+                        cache_dir=self.models_path / model_pipeline,
+                        token=self.huggingface_token
                     )
 
                 model_index_path = try_to_load_from_cache(url_or_repo, filename='model_index.json', cache_dir=self.models_path / model_pipeline)
