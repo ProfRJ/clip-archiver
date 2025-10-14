@@ -57,15 +57,16 @@ def resize_and_crop_centre(images:[Image], new_width:int, new_height:int) -> [Im
 
 class CLIP_Archiver(object):
     @classmethod
-    async def create(cls, civitai_token:str=None, default_model='stable-diffusion-v1-5/stable-diffusion-v1-5', huggingface_token:str=None, models_path:str='', default_user_config:dict=None, 
+    async def create(cls, civitai_token:str=None, default_model='stable-diffusion-v1-5/stable-diffusion-v1-5', models_path:str='', default_user_config:dict=None, huggingface_token:str=None, 
         save_as_4bit:bool=True, save_as_8bit:bool=False, logger=None, profiles_path:str=None, return_images_and_settings:bool=False) -> None:
         """
         Create and return the CLIP_Archiver class object, initialising it with the given config.
 
         civitai_token - str authenticator token for the civitai api, which is required if you wish to have downloads function.
         default_model - str with huggingface repo id or a link to a model hosted on civitai (default 'runwayml/stable-diffusion-v1-5')
+        default_user_config - dict of settings for users to start with. See below at line 77. (default None)
+        huggingface_token - str optional huggingface user access token. (default None)
         models_path - str or pathlike object with the intended location for the models. (default '')
-        default_user_config - dict of settings for users to start with. See below for the needed dict keys. (default None)
         logger - logging object (default None)
         profiles_path - str or pathlike object pointing to a json file which will be used to store user profiles.
         return_images_and_settings - bool which sets whether the images are returned in a tuple alongside the dict of settings used to make it. (default False)
@@ -74,7 +75,7 @@ class CLIP_Archiver(object):
         self.change_model_queue = asyncio.Queue(maxsize=0)
         if not default_user_config:
             default_user_config = {"height": 768, "width": 768, "num_images_per_prompt":1, "num_inference_steps": 22, "guidance_scale": 8.0, "scheduler": "ddim", 
-            "negative_prompt": "jpeg", "true_cfg_scale":1.0, "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": -1, "clip_skip": 0,
+            "negative_prompt": "jpeg", "hires_fix": "False", "hires_strength": 0.75, "init_image": None, "init_strength": 0.75, "seed": -1, "clip_skip": 0,
             "lora_and_embeds": None}
         self.default_user_config = default_user_config
         self.finished_generation = asyncio.Event()
@@ -111,7 +112,7 @@ class CLIP_Archiver(object):
 
     async def __call__(self, prompt:str, clip_skip:int=None, guidance_scale:float=None, height:int=None, hires_fix:bool=False, hires_strength:float=None, init_image:str=None, 
         init_strength:float=None, lora_and_embeds:[str]=None, model:str=None, negative_prompt:str=None, num_images_per_prompt:int=None, num_inference_steps:int=None, 
-        preset_name:str='_intermediate', true_cfg_scale:float=None, user:str='system', scheduler:str=None, seed:int=None, width:int=None) -> [Image] or ([Image], dict):
+        preset_name:str='_intermediate', user:str='system', scheduler:str=None, seed:int=None, width:int=None) -> [Image] or ([Image], dict):
         """
         Prompt a supported txt2img model with the specified settings.
 
@@ -129,7 +130,6 @@ class CLIP_Archiver(object):
         num_images_per_prompt - int amount of images to be generated together.
         num_inference_steps - int of how many iterations the image will go through. 
         preset_name - str of the preset to save the preset under. (default '_intermediate')
-        true_cfg_scale - float that is used in place of guidance_scale in some models.
         user - str of the profile to save the preset under. (default 'system')
         scheduler - str of how generation will be solved.
         seed - int representing a unique noise from which to start the generation.
@@ -175,7 +175,6 @@ class CLIP_Archiver(object):
             'guidance_scale':guidance_scale if guidance_scale else preset['guidance_scale'],
             'scheduler':scheduler.value if scheduler else preset['scheduler'],
             'negative_prompt':negative_prompt if negative_prompt else preset['negative_prompt'],
-            'true_cfg_scale':true_cfg_scale if true_cfg_scale else preset['true_cfg_scale'],
             'init_image':init_image if init_image else preset['init_image'],
             'init_strength':init_strength if init_strength else preset['init_strength'],
             'hires_fix': hires_fix if hires_fix else preset['hires_fix'],
