@@ -229,7 +229,7 @@ class Model_Manager(object):
                 self.default_model = model_names[0]
             else:
                 if self.logger:
-                    self.logger.warning(f'No models found at {self.models_path}.')
+                    self.logger.warning(f'No models found at {self.models_path}. Downloading {self.default_model}.')
         return self.models
 
     async def add_local_model(self, model_name:str, path:str, model_pipeline:str, model_type:str, convert_checkpoint_to_diffuser:bool=False, delete_checkpoint:bool=False, 
@@ -481,7 +481,7 @@ class Model_Manager(object):
 
             return pipeline_text2image, pipe_config
 
-        def stable_diffusion(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, scheduler:str, width:int, init_image:str=None, init_strength:float=None, 
+        def stable_diffusion(clip_skip:int, guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, scheduler:str, width:int, init_image:str=None, init_strength:float=None, 
             lora_and_embeds:list=None, model_info:dict=model_info, negative_prompt:str=None, hires_fix:bool=None, hires_strength:float=None, **kwargs):
             """
             Build a pipeline for a pre SD 3 stable diffusion model.
@@ -492,15 +492,17 @@ class Model_Manager(object):
                 model_pipeline += "Img2Img"
             pipeline = self.get_pipeline(model_pipeline)
             
+
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 torch_dtype=torch_dtype,
                 safety_checker=None,
+                variant='fp16'
             ).to('cuda')
-        
+
             # Memory and speed optimisation
             pipeline_text2image.enable_attention_slicing()
-            pipeline_text2image.enable_vae_slicing()
+            pipeline_text2image.vae.enable_slicing()
 
             # Use the specified scheduler
             pipeline_scheduler = self.get_scheduler(model_info['model_pipeline'], scheduler)
@@ -530,10 +532,8 @@ class Model_Manager(object):
             pipe_config['height'] = height
             pipe_config['num_inference_steps'] = num_inference_steps
             pipe_config['num_images_per_prompt'] = num_images_per_prompt
-            pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
-            pipe_config['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
-            pipe_config['prompt_embeds'] = prompt_embeds
-            pipe_config['pooled_prompt_embeds'] = pooled_prompt_embeds
+            pipe_config['negative_prompt'] = negative_prompt
+            pipe_config['prompt'] = prompt
             pipe_config['width'] = width
 
             return pipeline_text2image, pipe_config
