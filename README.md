@@ -10,7 +10,7 @@ An asynchronous interface for some select txt2img diffusion models using the [ðŸ
 Linux: `source .venv/bin/activate` \
 Windows: `.venv\Scripts\activate.bat` 
 - Install required pip dependencies: \
-`pip install accelerate bitsandbytes peft protobuf pytorch_lightning requests sentencepiece transformers` \
+`pip install accelerate aiofiles bitsandbytes peft protobuf pytorch_lightning requests sentencepiece transformers` \
 `pip install git+https://github.com/huggingface/diffusers`
 
 ## Basic Usage:
