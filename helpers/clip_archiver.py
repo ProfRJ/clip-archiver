@@ -7,7 +7,7 @@ import torch
 
 from diffusers.utils import load_image 
 from helpers import Async_JSON
-from helpers.model_manager import Model_Manager
+from helpers.model_manager import Model_Manager, resize_and_crop_centre
 from pathlib import Path
 from PIL import Image
 
@@ -22,38 +22,6 @@ def nslice(s, n, truncate=False, reverse=False):
     if len(s) and not truncate:
         yield s
 
-def resize_and_crop_centre(images:[Image], new_width:int, new_height:int) -> [Image]:
-    """
-    Rescales an image to different dimensions without distorting the image.
-
-    images - PIL image or list of PIL images that need to be transformed.
-    new_width - int of the desired image width.
-    new_height - int of the desired image height.
-    """
-    if not isinstance(images, list):
-        images = [images]
-
-    rescaled_images = []
-    for image in images:
-        img_width, img_height = image.size
-        width_factor, height_factor = new_width/img_width, new_height/img_height
-        factor = max(width_factor, height_factor)
-        image = image.resize((int(factor*img_width), int(factor*img_height)), Image.LANCZOS)
-
-        img_width, img_height = image.size
-        width_factor, height_factor = new_width/img_width, new_height/img_height
-        left, top, right, bottom = 0, 0, img_width, img_height
-        if width_factor <= 1.5:
-            crop_width = int((new_width-img_width)/-2)
-            left = left + crop_width
-            right = right - crop_width
-        if height_factor <= 1.5:
-            crop_height = int((new_height-img_height)/-2)
-            top = top + crop_height
-            bottom = bottom - crop_height
-        image = image.crop((left, top, right, bottom))
-        rescaled_images.append(image)
-    return rescaled_images
 
 class CLIP_Archiver(object):
     @classmethod
