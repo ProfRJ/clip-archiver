@@ -376,39 +376,36 @@ class Model_Manager(object):
                 pipeline_text2image.set_adapters([lora['lora'] for lora in lora_adapters_and_weights], adapter_weights=[lora['weight'] for lora in lora_adapters_and_weights])
             return pipeline_text2image
 
-        def aura_flow(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, model_info:dict=model_info, **kwargs):
+        def aura_flow(guidance_scale:float, height:int, negative_prompt:str, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, model_info:dict=model_info, **kwargs):
             """
             Build a pipeline for an AuraFlow model.
             """
             pipeline = self.get_pipeline(model_info['model_pipeline'])
             torch_dtype = torch.float16
 
+            # get our encoded prompt latents so we don't have to load the text encoders during generation
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
-                torch_dtype=torch.float16,
+                torch_dtype=torch.bfloat16,
                 variant='fp16',
                 transformer=None,
                 vae=None
             ).to('cuda')
-            (
-                prompt_embeds, 
-                prompt_attention_mask, 
-                negative_prompt_embeds, 
-                negative_prompt_attention_mask
-            ) = pipeline_text2image.encode_prompt(prompt=prompt, negative_prompt=negative_prompt, num_images_per_prompt=num_images_per_prompt, max_sequence_length=512, 
-                device='cuda')
+
+            prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask = pipeline_text2image.encode_prompt(prompt=prompt, negative_prompt=negative_prompt, 
+                num_images_per_prompt=num_images_per_prompt, max_sequence_length=512, device='cuda')
             del pipeline_text2image
 
             pipeline_text2image = pipeline.from_pretrained(
                 model_info['path'],
                 text_encoder=None,
-                torch_dtype=torch.float16,
+                torch_dtype=torch.bfloat16,
                 variant='fp16'
             ).to('cuda')
+
             pipe_config['guidance_scale'] = guidance_scale
             pipe_config['height'] = height
             pipe_config['num_inference_steps'] = num_inference_steps
-            pipe_config['num_images_per_prompt'] = num_images_per_prompt
             pipe_config['negative_prompt_attention_mask'] = negative_prompt_attention_mask
             pipe_config['negative_prompt_embeds'] = negative_prompt_embeds
             pipe_config['prompt_attention_mask'] = prompt_attention_mask
@@ -416,7 +413,7 @@ class Model_Manager(object):
             pipe_config['width'] = width
 
             return pipeline_text2image, pipe_config
-
+           
         def flux(guidance_scale:float, height:int, num_inference_steps:int, num_images_per_prompt:int, prompt:str, width:int, init_image:str=None, init_strength:float=None, lora_and_embeds:list=None, 
             model_info:dict=model_info, negative_prompt:str=None, hires_fix:bool=None, hires_strength:float=None, **kwargs):
             """
